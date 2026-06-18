@@ -11,7 +11,7 @@ boundaries are drawn exactly where a real backend plugs in.
 
 ## Demo
 
-- Loom walkthrough: [link]
+- Loom walkthrough: https://www.loom.com/share/72273e20e625447ab9cd2a14f2f890c1
 - Run locally: `npm install && npm run dev` → http://localhost:3000
 
 ## What's real vs. mocked
