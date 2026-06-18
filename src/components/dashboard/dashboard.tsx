@@ -143,6 +143,56 @@ const SCENARIOS: Scenario[] = [
   },
 ]
 
+/**
+ * What the state machine needs to drive a run: per-agent terminal lines +
+ * financial targets. A static Scenario already satisfies this shape (mock
+ * fallback); the API payload is normalized into the same shape.
+ */
+type RunSpec = Pick<Scenario, "name" | "type" | "script" | "targets">
+
+/* API payload (POST /api/campaign/run) → RunSpec normalization. */
+interface PipelineAgentResult {
+  status: string
+  executionTimeMs?: number
+  rawOutput: string
+}
+interface CampaignPayload {
+  pipelineResults: Record<string, PipelineAgentResult>
+  computedMetrics: { hoursSaved: number; marginDelta: number }
+}
+
+/** Maps our agent keys to the payload's pipelineResults keys. */
+const PAYLOAD_KEYS: Record<AgentKey, string> = {
+  ingestion: "agent_1_strategy",
+  copywriting: "agent_2_copywriting",
+  reviewer: "agent_3_reviewer",
+}
+
+/**
+ * Build a RunSpec from the API payload. The "done" line + financial targets
+ * come from the API; the in-progress "run" narration is kept from the scenario
+ * (the payload returns one result per agent, not a separate working message).
+ */
+function runSpecFromPayload(scenario: Scenario, payload: CampaignPayload): RunSpec {
+  const script = {} as Record<AgentKey, AgentScript>
+  for (const agent of AGENTS) {
+    const result = payload.pipelineResults[PAYLOAD_KEYS[agent.key]]
+    script[agent.key] = {
+      run: scenario.script[agent.key].run,
+      done: result?.rawOutput ?? scenario.script[agent.key].done,
+    }
+  }
+  return {
+    name: scenario.name,
+    type: scenario.type,
+    script,
+    targets: {
+      hoursSaved: payload.computedMetrics.hoursSaved,
+      marginDelta: payload.computedMetrics.marginDelta,
+    },
+  }
+}
+
 /** Each agent's badge stays "Running" for this long before advancing. */
 const STEP_DURATION_MS = 2000
 
@@ -169,11 +219,11 @@ interface MachineState {
   nextLogId: number
   launched: number
   shipped: number
-  /** The scenario the active run is executing against. */
-  scenario: Scenario | null
+  /** The resolved run spec (script + targets) the active run executes against. */
+  scenario: RunSpec | null
 }
 
-type Action = { type: "LAUNCH"; scenario: Scenario } | { type: "ADVANCE" }
+type Action = { type: "LAUNCH"; scenario: RunSpec } | { type: "ADVANCE" }
 
 const idleStatuses = (): Record<AgentKey, AgentStatus> => ({
   ingestion: "Idle",
@@ -327,17 +377,49 @@ export function Dashboard() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [state.logs])
 
-  const launch = () => dispatch({ type: "LAUNCH", scenario: selectedScenario })
+  const launchingRef = useRef(false)
+
+  // Pull the run data from the API, then drive the existing state machine with
+  // it. Any failure falls back to the static mock script, so the visual/timing
+  // behaviour is identical either way.
+  const launch = async () => {
+    if (launchingRef.current || isRunning) return
+    launchingRef.current = true
+    const scenario = selectedScenario
+    let run: RunSpec = scenario // mock fallback
+    try {
+      const res = await fetch("/api/campaign/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenarioId: scenario.id,
+          clientBrief: {
+            targetAudience: scenario.brief.audience,
+            budget: scenario.brief.budget,
+            goals: scenario.brief.goals,
+          },
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      run = runSpecFromPayload(scenario, (await res.json()) as CampaignPayload)
+    } catch {
+      run = scenario // network/parse failure → static mock script + targets
+    }
+    dispatch({ type: "LAUNCH", scenario: run })
+    launchingRef.current = false
+  }
 
   const stats = {
-    active: isRunning ? 1 : 0,
+    // A pipeline stays "active" in the workspace from launch through shipped,
+    // so the counter never reads 0 next to a visible Shipped pipeline.
+    active: state.phase !== "idle" ? 1 : 0,
     total: state.launched,
     shipped: state.shipped,
   }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <div className="hidden md:block">
+      <div className="hidden shrink-0 md:block">
         <Sidebar active={active} onSelect={setActive} />
       </div>
 

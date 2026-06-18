@@ -184,12 +184,6 @@ async function runMockPipeline(
 ): Promise<CampaignResponse> {
   const script = SCENARIO_SCRIPTS[scenarioId]
 
-  // Simulate sequential agent latency so loading states and the reported
-  // executionTimeMs values stay coherent.
-  const t1 = await timed(1400, () => script.strategy)
-  const t2 = await timed(1800, () => script.copywriting(clientBrief))
-  const t3 = await timed(1100, () => script.reviewer(clientBrief))
-
   return {
     success: true,
     timestamp: new Date().toISOString(),
@@ -200,9 +194,11 @@ async function runMockPipeline(
       totalTokensUsed: 4250,
     },
     pipelineResults: {
-      agent_1_strategy: result(t1.ms, t1.value),
-      agent_2_copywriting: result(t2.ms, t2.value),
-      agent_3_reviewer: result(t3.ms, t3.value),
+      // executionTimeMs kept as representative reported values; the client
+      // paces the 2s-per-agent animation itself via ADVANCE.
+      agent_1_strategy: result(1400, script.strategy),
+      agent_2_copywriting: result(1800, script.copywriting(clientBrief)),
+      agent_3_reviewer: result(1100, script.reviewer(clientBrief)),
     },
     computedMetrics: {
       hoursSaved: script.hoursSaved,
@@ -295,11 +291,6 @@ async function runLivePipeline(
 
 function result(executionTimeMs: number, rawOutput: string): AgentResult {
   return { status: "completed", executionTimeMs, rawOutput }
-}
-
-async function timed<T>(ms: number, fn: () => T): Promise<{ ms: number; value: T }> {
-  await new Promise((r) => setTimeout(r, ms))
-  return { ms, value: fn() }
 }
 
 /** Pull the trailing METRICS={…} line from the reviewer, with scenario fallback. */
